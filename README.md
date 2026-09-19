@@ -1283,6 +1283,34 @@ text, invalid `RRULE` (e.g. `FREQ=BOGUS`), unknown `TZID`
 `RANGE=THISANDFUTURE` (unsupported), `window_start >= window_end`, and
 expansions exceeding 10 000 occurrences per UID within the window.
 
+An **ambiguous UID group** is also rejected at the grouping stage, before
+any expansion or provenance projection: when one `UID` has more than one
+master `VEVENT` (a component without `RECURRENCE-ID`), the API cannot know
+which master defines the series, so every endpoint built on the shared
+recurrence kernel (`/expand`, `/provenance`, `/agenda`, `/alarms`,
+`/attendance`, `/availability`, `/conflicts`, `/freebusy-export`,
+`/calendar-diff`, and `/fair-rotation` for participant calendars) answers
+`422`. The message names both the `UID` and the number of master events,
+e.g.:
+
+```
+UID 'standup' has 2 master VEVENTs without RECURRENCE-ID; a series may have only one master event
+```
+
+Two near-identical shapes stay legal and are **not** flagged:
+
+- exactly one master plus any number of `RECURRENCE-ID` overrides,
+  including an override-only group (orphan overrides);
+- several overrides sharing the same `RECURRENCE-ID` — the last component
+  for one RID wins ("last override wins"), and overrides never count as
+  masters.
+
+The grouping check is whole-calendar (all UIDs are grouped before any
+series is projected), so `/provenance` rejects an ambiguous group even
+when a different `UID` was requested. `/validate` keeps its diagnostic
+behavior for the same condition and reports it as
+`duplicate_master_event` issues with `200`.
+
 `/availability` additionally returns `422` for: an unknown `timezone`
 (non-IANA name), a working period with `end <= start` or crossing
 midnight, an offset-bearing working time, an unknown weekday key, and a
@@ -1372,6 +1400,17 @@ types) are normal request-validation `422`s.
   when the original falls outside the expansion window (e.g. moved into the
   window from outside). A `STATUS:CANCELLED` override removes the instance.
   An override without `DTEND`/`DURATION` inherits the master's duration.
+  When several components carry the same `RECURRENCE-ID`, the last one in
+  source order wins; they are overrides, never duplicate masters.
+- **One master per UID**: a `UID` group may contain at most one master
+  `VEVENT` (a component without `RECURRENCE-ID`). A group with several
+  masters is ambiguous — there is no rule for choosing which one defines
+  the series — so the grouping stage (which runs before expansion or
+  provenance tracing for the whole calendar) rejects it with `422`,
+  naming the `UID` and the master count, on every endpoint that shares the
+  recurrence kernel. A group containing only overrides (no master) stays
+  valid and produces orphan candidates. Use `/validate`
+  (`duplicate_master_event`) for a non-fatal, structured report instead.
 - **Floating times** (no `Z`, no `TZID`) are interpreted as UTC.
 - **All-day events** (`DATE`-valued `DTSTART`) start at local midnight and
   last one day when no `DTEND` is given; `/agenda` renders them on their

@@ -489,3 +489,60 @@ def test_thisandfuture_override_is_rejected_identically():
         ),
     )
     assert_both_422(ics, "evt-1", *JAN, "THISANDFUTURE")
+
+
+def test_duplicate_master_events_are_rejected_identically():
+    # Two VEVENTs sharing one UID, neither carrying a RECURRENCE-ID: the
+    # grouping stage must flag the ambiguity (naming UID and master count)
+    # instead of silently expanding the first one.
+    ics = cal(
+        event(
+            "UID:evt-1",
+            "DTSTART:20260105T090000Z",
+            "DTEND:20260105T100000Z",
+            "SUMMARY:first master",
+        ),
+        event(
+            "UID:evt-1",
+            "DTSTART:20260106T140000Z",
+            "DTEND:20260106T150000Z",
+            "SUMMARY:second master",
+        ),
+    )
+    assert_both_422(ics, "evt-1", *JAN, "'evt-1' has 2 master VEVENTs")
+
+
+def test_single_master_with_same_rid_overrides_is_not_flagged():
+    # Two overrides for one RECURRENCE-ID follow the "last one wins" rule
+    # and must never be mistaken for duplicate masters.
+    ics = cal(
+        event(
+            "UID:evt-1",
+            "DTSTART:20260105T090000Z",
+            "DTEND:20260105T100000Z",
+            "RRULE:FREQ=DAILY;COUNT=3",
+        ),
+        event(
+            "UID:evt-1",
+            "RECURRENCE-ID:20260106T090000Z",
+            "DTSTART:20260106T100000Z",
+            "DTEND:20260106T110000Z",
+            "SUMMARY:older",
+        ),
+        event(
+            "UID:evt-1",
+            "RECURRENCE-ID:20260106T090000Z",
+            "DTSTART:20260106T120000Z",
+            "DTEND:20260106T130000Z",
+            "SUMMARY:winner",
+        ),
+    )
+    exp = expand(ics, *JAN)
+    assert exp.status_code == 200
+    assert starts(exp) == [
+        "2026-01-05T09:00:00Z",
+        "2026-01-06T12:00:00Z",  # the last same-RID override wins, once
+        "2026-01-07T09:00:00Z",
+    ]
+    assert exp.json()["instances"][1]["summary"] == "winner"
+    assert_consistent(ics, ["evt-1"], *JAN)

@@ -141,14 +141,35 @@ class CandidateSlot:
 
 
 def group_events_by_uid(calendar: Calendar) -> dict[str, list]:
-    """Group VEVENT components by UID; every VEVENT must declare one."""
+    """Group VEVENT components by UID; every VEVENT must declare one.
+
+    Grouping is also where an ambiguous series is rejected: a UID may carry
+    at most one master VEVENT (a component without ``RECURRENCE-ID``). Two
+    masters would otherwise make the kernel silently expand whichever one
+    source order placed first, so the error is raised here, before any
+    expansion or provenance projection, for every consumer at once.
+    ``RECURRENCE-ID`` overrides never count as masters — several components
+    for the same RID remain legal (the last one wins) and do not trip this.
+    """
     groups: dict[str, list] = {}
     for component in calendar.walk("VEVENT"):
         uid = component.get("UID")
         if uid is None:
             raise ExpansionError("VEVENT is missing the required UID property")
         groups.setdefault(str(uid), []).append(component)
+    for uid, events in groups.items():
+        _require_single_master(uid, events)
     return groups
+
+
+def _require_single_master(uid: str, events: list) -> None:
+    """Reject a UID group with more than one VEVENT lacking RECURRENCE-ID."""
+    master_count = sum(1 for event in events if "RECURRENCE-ID" not in event)
+    if master_count > 1:
+        raise ExpansionError(
+            f"UID {uid!r} has {master_count} master VEVENTs without "
+            "RECURRENCE-ID; a series may have only one master event"
+        )
 
 
 def compute_candidates(
@@ -163,6 +184,10 @@ def compute_candidates(
     for event in events:
         _validate_tzids(event)
 
+    # Defense in depth: grouping normally rejects this first, but a caller
+    # may build the event list directly; never silently keep one of several
+    # masters.
+    _require_single_master(uid, events)
     masters = [e for e in events if "RECURRENCE-ID" not in e]
     overrides = [e for e in events if "RECURRENCE-ID" in e]
     master = masters[0] if masters else None
