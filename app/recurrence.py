@@ -141,14 +141,40 @@ class CandidateSlot:
 
 
 def group_events_by_uid(calendar: Calendar) -> dict[str, list]:
-    """Group VEVENT components by UID; every VEVENT must declare one."""
+    """Group VEVENT components by UID; every VEVENT must declare one.
+
+    A UID group with more than one master (a VEVENT without
+    RECURRENCE-ID) is ambiguous — the kernel cannot tell which master
+    defines the series — so it is rejected here, at the grouping stage,
+    before any expansion or provenance projection runs. Overrides
+    (VEVENTs with RECURRENCE-ID) never count as masters: several
+    overrides may share one RECURRENCE-ID (the last one wins), and a
+    group without any master still yields orphan candidates.
+    """
     groups: dict[str, list] = {}
     for component in calendar.walk("VEVENT"):
         uid = component.get("UID")
         if uid is None:
             raise ExpansionError("VEVENT is missing the required UID property")
         groups.setdefault(str(uid), []).append(component)
+    for uid, events in groups.items():
+        _require_single_master(uid, events)
     return groups
+
+
+def _duplicate_master_message(uid: str, count: int) -> str:
+    """422 text for an ambiguous UID group; names the UID and master count."""
+    return (
+        f"UID {uid!r} has {count} VEVENTs without RECURRENCE-ID; "
+        "a recurring series may have only one master event"
+    )
+
+
+def _require_single_master(uid: str, events: list) -> None:
+    """Reject a UID group declaring more than one master VEVENT."""
+    masters = [e for e in events if "RECURRENCE-ID" not in e]
+    if len(masters) > 1:
+        raise ExpansionError(_duplicate_master_message(uid, len(masters)))
 
 
 def compute_candidates(
@@ -163,6 +189,10 @@ def compute_candidates(
     for event in events:
         _validate_tzids(event)
 
+    # Backstop for direct kernel callers: group_events_by_uid already
+    # rejects ambiguous groups, and this kernel must never silently pick
+    # one master over another either.
+    _require_single_master(uid, events)
     masters = [e for e in events if "RECURRENCE-ID" not in e]
     overrides = [e for e in events if "RECURRENCE-ID" in e]
     master = masters[0] if masters else None

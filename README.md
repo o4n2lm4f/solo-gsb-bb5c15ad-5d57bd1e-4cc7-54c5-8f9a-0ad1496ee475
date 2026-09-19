@@ -1279,9 +1279,12 @@ meeting gives each person a cumulative deviation of 60:
 
 Returned with a descriptive `detail` message for: unparsable iCalendar
 text, invalid `RRULE` (e.g. `FREQ=BOGUS`), unknown `TZID`
-(non-IANA name), missing `DTSTART`/`UID`, `RECURRENCE-ID` with
-`RANGE=THISANDFUTURE` (unsupported), `window_start >= window_end`, and
-expansions exceeding 10 000 occurrences per UID within the window.
+(non-IANA name), missing `DTSTART`/`UID`, more than one master `VEVENT`
+for the same `UID` (several `VEVENT`s without `RECURRENCE-ID`; the
+message names the `UID` and how many masters were found),
+`RECURRENCE-ID` with `RANGE=THISANDFUTURE` (unsupported),
+`window_start >= window_end`, and expansions exceeding 10 000
+occurrences per UID within the window.
 
 `/availability` additionally returns `422` for: an unknown `timezone`
 (non-IANA name), a working period with `end <= start` or crossing
@@ -1365,6 +1368,19 @@ types) are normal request-validation `422`s.
 
 ## Semantics and limitations
 
+- **One master per `UID`**: a series is defined by exactly one master
+  `VEVENT` (one without `RECURRENCE-ID`) plus any number of
+  `RECURRENCE-ID` overrides. When two or more masters share a `UID` the
+  grouping stage cannot tell which one defines the series, so the
+  calendar is rejected with `422` before any expansion or provenance
+  tracing — on `/expand`, `/provenance` and every endpoint reusing the
+  expander — with a message naming the `UID` and the master count (e.g.
+  `UID 'series' has 2 VEVENTs without RECURRENCE-ID; a recurring series
+  may have only one master event`). Several overrides for the *same*
+  `RECURRENCE-ID` remain legal (the last one wins), and an override-only
+  `UID` (no master at all) still yields orphan occurrences. `/validate`
+  reports the same situation as a `duplicate_master_event` diagnostic
+  instead of failing.
 - **Window overlap**: an instance is included when
   `start < window_end and end > window_start`; zero-duration instances when
   `window_start <= start < window_end`.
